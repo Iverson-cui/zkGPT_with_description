@@ -15,13 +15,11 @@
 using namespace mcl::bn;
 using namespace std;
 
-
-
-
-int main(int argc, char **argv) 
+int main(int argc, char **argv)
 {
+    // Initializes elliptic curve pairing using the BN254 curve (used in zero-knowledge proofs)
     initPairing(mcl::BN254);
-    
+
     // range prover
     range_prover range_prover(12, 12, 64, 768, 2304, 30, 32, 1); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim, 30 seq len, 32 threads
     range_prover.init();
@@ -30,11 +28,12 @@ int main(int argc, char **argv)
 
     // gkr
     prover p;
-    LLM nn(12, 12, 64, 768, 2304);  // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim
+    // Create LLM neural network with same architecture parameters
+    LLM nn(12, 12, 64, 768, 2304); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim
     nn.create(p, 1);
     verifier v(&p, p.C);
+    // range verification
     v.range_prove(range_prover_time);
+    // main proof generation
     v.prove(32); // prove with 32 threads
-
 }
-
