@@ -24,6 +24,7 @@ int main(int argc, char **argv)
     range_prover range_prover(12, 12, 64, 768, 2304, 30, 32, 1); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim, 30 seq len, 32 threads
     range_prover.init();
     range_prover.build();
+    // this is where the range prove happens
     double range_prover_time = range_prover.prove();
 
     // gkr
@@ -32,7 +33,7 @@ int main(int argc, char **argv)
     LLM nn(12, 12, 64, 768, 2304); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim
     nn.create(p, 1);
     verifier v(&p, p.C);
-    // range verification
+    // This function is NOT range prove, it just records timing
     v.range_prove(range_prover_time);
     // main proof generation
     v.prove(32); // prove with 32 threads

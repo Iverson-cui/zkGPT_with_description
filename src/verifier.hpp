@@ -18,6 +18,7 @@ public:
     verifier(prover *pr, const layeredCircuit &cir);
 
     void prove(int commit_thread=4);
+    // inline function in hpp files
     void range_prove(double range_prover_time_) { range_prover_time = range_prover_time_; };
 
     timer total_timer, total_slow_timer;
