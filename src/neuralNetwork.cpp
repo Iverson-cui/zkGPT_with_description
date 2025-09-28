@@ -1374,6 +1374,9 @@ void neuralNetwork::softmax_layer_3(layer &circuit, i64 &layer_id, float SQ, flo
     q_offset = orgsize + 10 + HEAD * 2 * len + 4 * HEAD * len * (len + 1) / 2 + HEAD * len * HSIZE;
 }
 
+/**
+ * layer creation function for FC layers
+ */
 void neuralNetwork::fullyConnLayer(layer &circuit, i64 &layer_id, i64 first_fc_id, int x_offset, int x_layer)
 {
     // size of output matrix
