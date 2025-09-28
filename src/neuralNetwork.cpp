@@ -109,8 +109,14 @@ void neuralNetwork::initParam(prover &pr, int depth)
     SIZE = 1 + layers.size() * depth; // TODO here is very important to avoid strange memory errors
 }
 
+/**
+ * Merges layers of the same category into a single layer to optimize the circuit.
+ * This is a core innovation mentioned in the paper. By squeezing nearly all layers of the circuit into the first 4 layers, the circuits will become shorter
+ * All gates and values are moved to the first 4 layers
+ */
 void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
 {
+    // cntp: count of ReLU and FC layers
     int cntp = 0;
     // iterate through all layers to find ReLU and FC
     for (int i = 0; i < layer_id; i++)
@@ -120,17 +126,23 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
         if ((int)pr.C.circuit[i].ty == 4 || (int)pr.C.circuit[i].ty == 11)
         {
             ++cntp;
+            // create a layer with the same type
             layer v;
             v.ty = pr.C.circuit[i].ty;
+            // swap the blank placeholder layer and current layer, now new layer is put at the end of the circuit while the original place only has one blank layer
             pr.C.circuit.push_back(v);
             swap(pr.C.circuit[i], pr.C.circuit[pr.C.circuit.size() - 1]);
+            // do the same operation for the values array
             vector<F> f;
             pr.val.push_back(f);
             swap(pr.val[i], pr.val[pr.val.size() - 1]);
         }
     }
+    // itf is the iterator for value vector
     vector<vector<F>>::iterator itf = pr.val.begin();
     int cnt2 = 0;
+    // "it" is the iterator for circuit layers
+    // iterate through all circuit layers and erase all placeholders created above
     for (vector<layer>::iterator it = pr.C.circuit.begin(); it < pr.C.circuit.end();)
     {
         if ((int)it->ty == 4 || (int)it->ty == 11)
@@ -155,10 +167,13 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
     }
     int offset[5] = {0, 0, 0, 0, 0};
     int lazy_offset[5] = {0, 0, 0, 0, 0};
+    // layers before 4 are input layers and initial processing layers
     for (int i = 4; i < layer_id; i++)
     {
         auto t = pr.C.circuit[i].ty;
+        // os is the consolidated categories of this layer
         int os = 0;
+        // based on layer type, assign os
         if (t == layerType::MHA_QK || t == layerType::GELU_1 || t == layerType::LAYER_NORM_1)
             os = 1;
         else if (t == layerType::SOFTMAX_1 || t == layerType::GELU_2 || t == layerType::LAYER_NORM_2)
@@ -172,11 +187,13 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
         assert(os != 0);
         assert(pr.val[i].size() == pr.C.circuit[i].size);
 
+        // copies all layer's output to the first 4 vectors of pr.val, consolidating the input
         for (int j = 0; j < pr.C.circuit[i].size; j++)
         {
             pr.val[os].emplace_back(pr.val[i][j]);
         }
     }
+    // Now we focus on the first 4 layers
     for (int i = 1; i < 4; i++)
     {
         auto t = pr.C.circuit[i].ty;
@@ -189,14 +206,19 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
             os = 3;
         else if (t == layerType::SOFTMAX_3)
             os = 4;
+        // os==i means layers are at their correct consolidated position
         if (os == i)
         {
+            // update uni_interbal and bin_interval
+            // 0 means 0-th layer, size() keeps how many gates does this 0-th layer have
             pr.C.circuit[os].uni_interval.emplace_back(make_pair(0, pr.C.circuit[i].uni_gates.size()));
             pr.C.circuit[os].bin_interval.emplace_back(make_pair(0, pr.C.circuit[i].bin_gates.size()));
         }
     }
+    // for the layers after 4
     for (int i = 4; i < layer_id; i++)
     {
+        // assign current layer type to os
         auto t = pr.C.circuit[i].ty;
         int os = 0, os1 = 0;
         if (t == layerType::MHA_QK || t == layerType::GELU_1 || t == layerType::LAYER_NORM_1)
@@ -211,6 +233,7 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
             break;
         assert(os != 0);
 
+        // assign previous layer type to os1
         auto t2 = pr.C.circuit[i - 1].ty;
         if (t2 == layerType::MHA_QK || t2 == layerType::GELU_1 || t2 == layerType::LAYER_NORM_1)
             os1 = 1;
@@ -223,9 +246,12 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
 
         assert(i != os);
         offset[os1] = offset[os] = 0;
+        // this iteration calculate offset of the current layer type
+        // for all the layers before i-th layer
         for (int j = 1; j < i; j++)
         {
             auto tp = pr.C.circuit[j].ty;
+            // tos means current layer type
             int tos = 0;
             if (tp == layerType::MHA_QK || tp == layerType::GELU_1 || tp == layerType::LAYER_NORM_1)
                 tos = 1;
@@ -235,9 +261,13 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
                 tos = 3;
             else if (tp == layerType::SOFTMAX_3)
                 tos = 4;
+            // if current layer type = i-th layer type
             if (tos == os)
+                // update offset based on current layer size
                 offset[os] += pr.C.circuit[j].size;
         }
+        // do the same thing as the above iteration
+        // exept that this loop computes the offset for the previous layer's category
         for (int j = 1; j < i - 1; j++)
         {
             auto tp = pr.C.circuit[j].ty;
@@ -253,20 +283,29 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
             if (tos == os1)
                 offset[os1] += pr.C.circuit[j].size;
         }
+        // update uni_interval to contain current layer info
         pr.C.circuit[os].uni_interval.emplace_back(make_pair(pr.C.circuit[os].uni_gates.size(), pr.C.circuit[os].uni_gates.size() + pr.C.circuit[i].uni_gates.size()));
+        // unary gate processing loop
+        // move all of the gates to the first 4 layers
         for (auto g = pr.C.circuit[i].uni_gates.begin(); g != pr.C.circuit[i].uni_gates.end(); g++)
         {
+            // unary gates accept input from layer 0
             if ((int)g->lu == 0)
+                // when putting this layer's gates into pr.C.circuit[os], only need to update gate id by adding offset[os]
                 pr.C.circuit[os].uni_gates.emplace_back(g->g + offset[os], g->u, 0, g->sc);
+            // unary gates accept input from previous layers
             else
             {
+                // need to update gate id and input id
                 pr.C.circuit[os].uni_gates.emplace_back(g->g + offset[os], g->u + offset[os1], os1, g->sc);
                 assert(os == os1 + 1);
                 assert(g->u < pr.C.circuit[i - 1].size);
                 assert(g->u + offset[os1] < pr.val[os1].size());
             }
         }
+        // do the same for this layer's binary gates
         pr.C.circuit[os].bin_interval.emplace_back(make_pair(pr.C.circuit[os].bin_gates.size(), pr.C.circuit[os].bin_gates.size() + pr.C.circuit[i].bin_gates.size()));
+        // binary gate processing loop
         for (auto g = pr.C.circuit[i].bin_gates.begin(); g != pr.C.circuit[i].bin_gates.end(); g++)
         {
             if ((int)g->l == 0)
@@ -278,10 +317,14 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
             assert(g->g + offset[os] < pr.val[os].size());
         }
     }
+    // erase those layers that have been merged to the first 4 layers
+    // Special layers at the end is not merged and not erased
     pr.C.circuit.erase(pr.C.circuit.begin() + 5, pr.C.circuit.begin() + layer_id - cntp);
     pr.val.erase(pr.val.begin() + 5, pr.val.begin() + layer_id - cntp);
 
     pr.C.size = pr.C.circuit.size();
+    // for the newly generated circuit, init every new layers
+    // also make sure that merging doesn't change the result so that the circuit can function correctly as well
     for (int i = 1; i < pr.C.size; i++)
     {
         initLayer(pr.C.circuit[i], pr.val[i].size(), pr.C.circuit[i].ty);
@@ -1504,6 +1547,10 @@ void neuralNetwork::calcNormalLayer(const layer &circuit, i64 layer_id, bool out
     }
 }
 
+/**
+ * Validation routine after layer merging
+ * recomputes the output values for all gates in the specified layer and checks that these mathch the stored results
+ */
 void neuralNetwork::checkNormalLayer(const layer &circuit, i64 layer_id, const vector<vector<F>> &val)
 {
     vector<F> valp;
