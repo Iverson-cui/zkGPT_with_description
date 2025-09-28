@@ -108,11 +108,15 @@ void neuralNetwork::initParam(prover &pr, int depth)
     vector<string> layers = {"l1", "l2", "l3", "fcon", "round", "MHA_QK", "softmax*V", "softmax*v", "soft_end", "fcon2", "round2", "l1", "l2", "l3", "fcon3", "round", "gelu1", "g2", "g3", "fcon4", "round"};
     SIZE = 1 + layers.size() * depth; // TODO here is very important to avoid strange memory errors
 }
+
 void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
 {
     int cntp = 0;
+    // iterate through all layers to find ReLU and FC
     for (int i = 0; i < layer_id; i++)
     {
+        // ty==4->ReLU, ty==11->FC
+        // these layers need to be specially handled
         if ((int)pr.C.circuit[i].ty == 4 || (int)pr.C.circuit[i].ty == 11)
         {
             ++cntp;
@@ -360,6 +364,7 @@ void neuralNetwork::create(prover &pr, bool merge)
         }
     }
 
+    // merge happens after all layers are created
     if (merge)
     {
         merge_layer(pr, layer_id);
@@ -387,7 +392,7 @@ void neuralNetwork::inputLayer(layer &circuit)
 {
     initLayer(circuit, total_in_size, layerType::INPUT);
     for (i64 i = 0; i < total_in_size; ++i)
-        circuit.uni_gates.emplace_back(i, 0, 0, 1);
+        circuit.uni_gates.emplace_back(i, 0, 0, 1); // the wiring of the gates doesn't matter, because for input layer we are directly loading data into val[0]
 
     calcInputLayer(circuit);
 }
@@ -990,6 +995,7 @@ void neuralNetwork::roundLayer(layer &circuit, i64 &layer_id, float scale, bool 
         ll p = convert(val[layer_id - 1][g]);
         // q: quantized output value
         ll q = round(p * c * pow(2, m));
+        // update val[0]
         val[0][qq] = q; // compute non-linear round
         int s = qq + block_len;
 
@@ -1036,14 +1042,18 @@ void neuralNetwork::roundLayer(layer &circuit, i64 &layer_id, float scale, bool 
 
 void neuralNetwork::multi_head_matrix_QK(layer &circuit, i64 &layer_id)
 {
+    // number of attention heads
     const int HEAD = 12;
+    // head dimension
     const int HSIZE = 64;
     int output_size = HEAD * len * (len + 1) / 2;
     initLayer(circuit, output_size, layerType::MHA_QK);
     circuit.need_phase2 = true;
+    // iterate through attention head
     for (int head = 0; head < HEAD; head++)
     {
         int T = 0;
+        // iterate through each position pair
         for (int i = 0; i < len; i++)
             for (int j = 0; j <= i; j++)
             {
@@ -1058,6 +1068,9 @@ void neuralNetwork::multi_head_matrix_QK(layer &circuit, i64 &layer_id)
                     int idj = j * channel_out + col_j;
                     int gate_i = q_offset + idi;
                     int gate_j = q_offset + idj;
+                    // all these gates read input from layer 0
+                    // this is because when executed, many layers would write results back to layer 0 and thus layer 0 gets expanded
+                    // although MHA should read input from previous layer, previous layer output is written back to layer 0. Directly reading value from layer 0 will parallalize the sumcheck verification process.
                     circuit.bin_gates.emplace_back(targ_gate, gate_i, gate_j, 1, 0);
                 }
                 ++T;
@@ -1320,7 +1333,9 @@ void neuralNetwork::softmax_layer_3(layer &circuit, i64 &layer_id, float SQ, flo
 
 void neuralNetwork::fullyConnLayer(layer &circuit, i64 &layer_id, i64 first_fc_id, int x_offset, int x_layer)
 {
+    // size of output matrix
     i64 size = channel_out * len;
+    // initialize this layer
     initLayer(circuit, size, layerType::FCONN);
     circuit.need_phase2 = true;
     val[layer_id].resize(circuit.size);
@@ -1333,6 +1348,8 @@ void neuralNetwork::fullyConnLayer(layer &circuit, i64 &layer_id, i64 first_fc_i
             // circuit.uni_gates.emplace_back(g, first_bias_id + co, 0, 1);  // our protocol doesn't support adding bias for simplicity
             for (i64 ci = 0; ci < channel_in; ++ci)
             {
+                // input: val[x_layer][u]
+                // weight: val[0][v]
                 i64 u = x_offset + matIdx(i, ci, channel_in);
                 i64 v = first_fc_id + matIdx(co, ci, channel_in); // the matrix is distributed as (i,ci)*(co,ci)
                 val[layer_id][g] += val[x_layer][u] * val[0][v];
@@ -1382,12 +1399,14 @@ void neuralNetwork::calcInputLayer(layer &circuit)
             mn = min(mn, num);
         }
     }
+    // quantize input data
     pair<int, int> pm = search(0.01);
     input_e = pm.first;
     input_c = pm.second;
 
     double sc = input_c * pow(2, input_e);
     int k = 0;
+    // val[0] has values directly loaded from input file
     for (i64 i = 0; i < len; i++)
     {
         for (i64 j = 0; j < hidden; j++)

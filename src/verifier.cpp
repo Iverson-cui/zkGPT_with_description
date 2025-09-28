@@ -496,6 +496,7 @@ bool verifier::verifyGKR()
         else
             relu_rou = F_ONE;
         F previousRandom = F_ZERO;
+        // for fully connected layers
         if (C.circuit[i].ty == layerType::FCONN) // substitute matrix with thaler13
         {
             now_fc_id = --fc_cnt;
@@ -520,8 +521,10 @@ bool verifier::verifyGKR()
             Fr sum = 0;
             ptimer.start();
             mat_timer.start();
+            // initialize bookkeeping tables
             Fr *pa = init_book_keeping(m, n, p->val[0], p->fc_input_id[now_fc_id], r_u[i]);
             Fr *pb = init_book_keeping_fast(m, k, p->mat_val[now_fc_id], r_v[i]);
+            // do the sumcheck product
             pair<Fr, Fr> oracle = sum_check_product(pa, pb, m - 1, r_u[i].data(), prev_u1);
             mat_timer.stop();
             ptimer.stop();
@@ -532,6 +535,7 @@ bool verifier::verifyGKR()
             final_claim_v0[i] = oracle.second;
             final_claim_v1 = 0;
         }
+        // for other layers
         else
         {
             timer normal_timer;
@@ -544,18 +548,24 @@ bool verifier::verifyGKR()
             for (int j = 0; j < cur.max_bl_u; ++j)
                 r_u[i][j].setByCSPRNG();
             sc.start();
+            // sumcheck iteration
             for (i8 j = 0; j < cur.max_bl_u; ++j)
             {
                 F cur_claim, nxt_claim;
                 ptimer.start();
+                // p sends partial sum: quadratic poly
                 quadratic_poly poly = p->sumcheckUpdate1(previousRandom);
                 ptimer.stop();
                 prover_time += ptimer.elapse_sec();
 
                 vtimer.start();
+                // current claim is verified by 0+1
                 cur_claim = poly.eval(F_ZERO) + poly.eval(F_ONE);
+                // next claim is obtained by evaluating at random challenge
                 nxt_claim = poly.eval(r_u[i][j]);
 
+                // if current claim != previous claim
+                // sumcheck verification fails, returning false
                 if (cur_claim != previousSum)
                 {
                     cerr << cur_claim << ' ' << previousSum << endl;
@@ -564,7 +574,9 @@ bool verifier::verifyGKR()
                 }
                 vtimer.stop();
                 verifier_time += vtimer.elapse_sec();
+
                 previousRandom = r_u[i][j];
+                // assign nxt_claim to previousSum for next round verification
                 previousSum = nxt_claim;
             }
             sc.stop();
@@ -577,6 +589,7 @@ bool verifier::verifyGKR()
             ptimer.stop();
             prover_time += ptimer.elapse_sec();
 
+            // phase 2 verification
             if (cur.need_phase2)
             {
                 timer normal_timer2;
@@ -591,13 +604,16 @@ bool verifier::verifyGKR()
                 prover_time += ptimer.elapse_sec();
                 previousRandom = F_ZERO;
                 sc.start();
+                // phase 2 iteration
                 for (u32 j = 0; j < cur.max_bl_v; ++j)
                 {
                     ptimer.start();
+                    // phase 2 poly in every round
                     quadratic_poly poly = p->sumcheckUpdate2(previousRandom);
                     ptimer.stop();
                     prover_time += ptimer.elapse_sec();
                     vtimer.start();
+                    // verification in every round
                     if (poly.eval(F_ZERO) + poly.eval(F_ONE) != previousSum)
                     {
                         fprintf(stderr, "Verification fail, phase2, circuit level %d, current bit %d, total is %d\n", i, j,
@@ -607,6 +623,7 @@ bool verifier::verifyGKR()
                     vtimer.stop();
                     verifier_time += vtimer.elapse_sec();
                     previousRandom = r_v[i][j];
+                    // next claim for next round verification
                     previousSum = poly.eval(previousRandom);
                 }
                 sc.stop();
