@@ -335,6 +335,7 @@ void range_prover::build()
     int query_size = 0;
     std::vector<std::pair<int, int>> params;
 
+    // this function has two branches, for merged case and not merged case
     if (!merged)
     {
         // layernorm

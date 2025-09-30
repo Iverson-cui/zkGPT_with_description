@@ -21,7 +21,7 @@ int main(int argc, char **argv)
     initPairing(mcl::BN254);
 
     // range prover
-    range_prover range_prover(12, 12, 64, 768, 2304, 30, 32, 1); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim, 30 seq len, 32 threads
+    range_prover range_prover(12, 12, 64, 768, 2304, 30, 32, 1); // 12 layer, 12 head, 64 channel, 768 head dim, 2304 linear dim, 30 seq len, 32 threads; merge
     range_prover.init();
     range_prover.build();
     // this is where the range prove happens

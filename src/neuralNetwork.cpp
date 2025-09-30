@@ -70,6 +70,10 @@ void Out_group(Fr a, Fr b, Fr c)
 // input:   [data]
 //          [[conv_kernel || relu_conv_bit_decmp]{sec.size()}[max_pool]{if maxPool}[pool_bit_decmp]]{conv_section.size()}
 //          [fc_kernel || relu_fc_bit_decmp]
+/**
+ * This function assigns start positions of FC weights.
+ * But this function doesn't load weights
+ */
 void neuralNetwork::initParam(prover &pr, int depth)
 {
     total_in_size = 0;
@@ -79,6 +83,7 @@ void neuralNetwork::initParam(prover &pr, int depth)
     total_max_in_size = 0;
     // data
     i64 pos = 32 * 1024;
+    // iterate through every fully connected layer
     for (int i = 0; i < full_conn.size(); ++i)
     {
         auto &fc = full_conn[i];
@@ -94,6 +99,7 @@ void neuralNetwork::initParam(prover &pr, int depth)
         pr.fc_real_col[i] = fc.channel_out;
         fc.channel_out = pr.fc_col[i] = 1 << ceilPow2BitLength(fc.channel_out);
 
+        // assign weight_start_id to every fc layer
         fc.weight_start_id = pos; // TODO calc FC pos
         pr.fc_start_id[i] = fc.weight_start_id;
         u32 para_size = pr.fc_row[i] * pr.fc_col[i];
@@ -104,6 +110,7 @@ void neuralNetwork::initParam(prover &pr, int depth)
         // total_para_size += channel_out;
         // fprintf(stderr, "full conn  bias   weight: %11lld%11lld\n", channel_out, total_para_size);
     }
+    // total_in_size contains weights and input data size
     total_in_size = pos;
     vector<string> layers = {"l1", "l2", "l3", "fcon", "round", "MHA_QK", "softmax*V", "softmax*v", "soft_end", "fcon2", "round2", "l1", "l2", "l3", "fcon3", "round", "gelu1", "g2", "g3", "fcon4", "round"};
     SIZE = 1 + layers.size() * depth; // TODO here is very important to avoid strange memory errors
@@ -334,13 +341,18 @@ void neuralNetwork::merge_layer(prover &pr, i64 layer_id)
 }
 void neuralNetwork::create(prover &pr, bool merge)
 {
+    // prepare for exponential table
     compute_e_table();
+    // assign FC layer start id without loading
     initParam(pr, layer_num);
     pr.C.init(Q_BIT_SIZE, SIZE);
+    // resize val to the number of layers in the circuit
     pr.val.resize(SIZE);
     val = pr.val.begin();
     i64 layer_id = 0;
+    // first layer is the input layer
     inputLayer(pr.C.circuit[layer_id++]);
+    // for full_conn.size() FC layers, load random weights to each layer
     for (int i = 0; i < full_conn.size(); ++i)
     {
         auto &fc = full_conn[i];
@@ -351,15 +363,19 @@ void neuralNetwork::create(prover &pr, bool merge)
     int logn = pr.C.circuit[0].bit_length;
     u64 n_sqrt = 1ULL << (logn - (logn >> 1));
     int c = 0;
+    // allocate space to pr.gens vector
     pr.gens.resize(n_sqrt);
+    // fill this vector with generator elements
     G1 base = gen_gi(pr.gens.data(), n_sqrt);
     pr.gens.push_back(base);
     T.start();
+    // commit input layer values
     pr.commitInput(pr.gens, 32); // commit weight
     T.stop();
     pr.proof_size += 1 << (pr.cc.l / 2);
     cout << "Model weight commit time: " << T.elapse_sec() << "s" << endl;
     cout << "Start initiating circuit" << endl;
+    // initialize FC layers
     for (int i = 0; i < full_conn.size(); ++i)
     {
         auto &fc = full_conn[i];
@@ -369,36 +385,47 @@ void neuralNetwork::create(prover &pr, bool merge)
             q_offset = 0;
         }
         read_layer_norm(0);
+        // create a sparsity matrix for every FC layer, initialized to all false
         bool *sparsity = new bool[pr.fc_input_row[i] * pr.fc_input_col[i]];
         memset(sparsity, 0, sizeof(bool) * pr.fc_input_row[i] * pr.fc_input_col[i]);
         int cnt = 0;
+        // fill the sparsity matrix based on real input size
+        // using this matrix, real input data and padded zero can be distinguished
         for (int j = 0; j < pr.fc_real_input_row[i]; j++)
             for (int k = 0; k < pr.fc_real_input_col[i]; k++)
             {
                 ++cnt;
                 sparsity[j * pr.fc_input_col[i] + k] = true;
             }
+        // at some point do layer normalization
         if (i % 4 == 0 || i % 4 == 2)
         {
+            // three layers altogether make sure layer norm is done correctly
             ln_checker_layer1(pr.C.circuit[layer_id], layer_id, 0, input_e, input_c, pr.fc_real_input_col[0], sparsity);
             ln_checker_layer2(pr.C.circuit[layer_id], layer_id, 0, input_e, input_c, sparsity);
             ln_checker_layer3(pr.C.circuit[layer_id], layer_id, 0, input_e, input_c, pr.fc_real_input_col[0], sparsity);
         }
         pr.fc_input_id[i] = q_offset;
+        // create a FC layer
         fullyConnLayer(pr.C.circuit[layer_id], layer_id, fc.weight_start_id, q_offset, 0);
         int cx = 7, ex = -8, cy = 3, ey = -8;
         float c_A, e_A, c_B = 1, e_B = -10, c_C = 7, e_C = -8;
         c_A = input_c;
         e_A = input_e;
 
+        // after a FC layer, round is performed
         roundLayer(pr.C.circuit[layer_id], layer_id, (float)c_A * c_B / c_C * pow(2, e_A + e_B - e_C));
+
+        // at some point do MHA and softmax
         if (i % 4 == 0)
         {
+            // MHA layers
             multi_head_matrix_QK(pr.C.circuit[layer_id], layer_id);
             softmax_layer_1(pr.C.circuit[layer_id], layer_id, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(1, -8));
             softmax_layer_2(pr.C.circuit[layer_id], layer_id, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(1, -8));
             softmax_layer_3(pr.C.circuit[layer_id], layer_id, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(2, e_C) * c_C, pow(1, -8));
         }
+        // at some point do GeLU
         if (i % 4 == 2)
         {
             gelu_checker_layer1(pr.C.circuit[layer_id], layer_id, pr.fc_real_col[i], -8, 48, -8, 217, -8, 252, -8, 615, ex, cx, ey, cy);
@@ -458,6 +485,9 @@ pair<int, int> search(double scale)
     return make_pair(best_e, best_c);
 }
 
+/**
+ * This function initialized the parameters for a layer normalization operation
+ */
 void neuralNetwork::read_layer_norm(int ln_id)
 {
     // int layer_norm_w_c[30], layer_norm_w_e[30],layer_norm_b_c[30], layer_norm_b_e[30];
@@ -504,6 +534,11 @@ std::ostream &operator<<(std::ostream &os, __int128_t value)
         os << val;
     } while (1);
 }
+
+/**
+ * every layer norm layer contains 3 sub layers
+ * layer norm sub layer 1
+ */
 void neuralNetwork::ln_checker_layer1(layer &circuit, i64 &layer_id, int ln_id, int ey, int cy, int real_cn_in, bool *sparsity_map)
 {
 
@@ -1007,7 +1042,7 @@ void neuralNetwork::gelu_checker_layer3(layer &circuit, i64 &layer_id, int real_
     q_offset = gelu_aux_start + 10;
 }
 
-// we place the computation of after fcon layer here
+// Round layer after FC layers
 void neuralNetwork::roundLayer(layer &circuit, i64 &layer_id, float scale, bool *sparsity_map)
 {
     i64 block_len = len * channel_out;
@@ -1123,22 +1158,32 @@ void neuralNetwork::multi_head_matrix_QK(layer &circuit, i64 &layer_id)
     layer_id++;
 }
 
+/**
+ * e_table is the exponential table used to verify exponential opeartions
+ */
 void neuralNetwork::compute_e_table()
 {
     double St = pow(2, -9), Se = pow(2, -20);
     for (int i = 0; i < 655360; i++)
     {
         int t = round(exp(-St * i) / Se);
+        // this is to avoid result being 0 for numerical stability
         table[i] = max(t, 1); // TODO: avoid sum_Ei=0, occasionally happens
     }
 }
 
+/**
+ * This function implements the first stage of the softmax operation for a multi-head attention block
+ * translating the floating-point softmax computation into quantized, field-compatible arithmetic constraints
+ */
 void neuralNetwork::softmax_layer_1(layer &circuit, i64 &layer_id, float SQ, float SK, float Sv, float Sy)
 {
     const int HEAD = 12;
     const int HSIZE = 64;
     int orgsize = val[0].size();
+    // expand val[0] size
     val[0].resize(orgsize + 10 + HEAD * 2 * len + 4 * HEAD * len * (len + 1) / 2 + HEAD * len * HSIZE + len * channel_in); // sumE,pmax,delta1,delta2,t,E,delta3,Y
+    // clear the new added part
     for (int i = orgsize; i < val[0].size(); i++)
         val[0][i].clear();
     val[0][orgsize] = 1;
@@ -1487,19 +1532,27 @@ void neuralNetwork::readBias(i64 first_bias_id)
         *val_0++ = F((i64)(i * exp2(w_bit + x_bit)));
 }
 
+/**
+ * For a fully connected layer, load weights.
+ * For now it loads random values
+ */
 void neuralNetwork::readFconWeight(i64 first_fc_id, int real_r, int real_c, int id)
 {
     double num, mx = -10000, mn = 10000;
     auto val_0 = val[0].begin() + first_fc_id;
+    // assign a large block of memory for weights
     mat_values[id] = new int[4096 * 1024];
+    // iterate through output channel and input channel
     for (i64 co = 0; co < channel_out; ++co)
         for (i64 ci = 0; ci < channel_in; ++ci)
         {
             if (co < real_c && ci < real_r)
             {
+                // assign random values to legal weights
                 mat_values[id][co * channel_in + ci] = rand() % 1024;
                 val_0[co * channel_in + ci] = mat_values[id][co * channel_in + ci];
             }
+            // illegal position is assigned 0
             else
             {
                 mat_values[id][co * channel_in + ci] = 0;

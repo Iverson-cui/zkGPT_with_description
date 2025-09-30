@@ -622,9 +622,13 @@ void prover::sumcheck_lasso_Finalize(const F &previous_random, F &claim_1)
     proof_size += F_BYTE_SIZE;
 }
 
+/**
+ * This function prepares and commits the input layer values.
+ */
 void prover::commitInput(const vector<G1> &gens, int thr)
 {
     int len;
+    // checks if the input size = 2^layer's bit length
     if (C.circuit[0].size != (1ULL << C.circuit[0].bit_length))
     {
         len = val[0].size();
@@ -634,9 +638,11 @@ void prover::commitInput(const vector<G1> &gens, int thr)
     }
 
     int l = ceil(log2(val[0].size()));
+    // vi is a buffer holding integer representations of the input values
     ll *vi = new ll[1 << l];
     memset(vi, 0, sizeof(ll) * (1 << l));
     ll mx = -1e9, mn = 1e9;
+    // convert val[0][i] to integer and store in vi[i]
     for (int i = 0; i < val[0].size(); i++)
     {
         vi[i] = convert(val[0][i]);
@@ -644,6 +650,7 @@ void prover::commitInput(const vector<G1> &gens, int thr)
         mn = min(mn, vi[i]);
     }
 
+    // dat is a second buffer holding the field values
     Fr *dat = new Fr[1 << l];
     memset(dat, 0, sizeof(Fr) * (1 << l));
     memcpy(dat, val[0].data(), sizeof(Fr) * val[0].size());
